@@ -58,6 +58,28 @@ while [[ "\$#" -gt 0 ]]; do
 done
 
 echo "🛠️  Initializing Complete Lab at: $WORKSPACE_DIR"
+
+# --- 0. System Dependency Auto-Install ---
+install_deps() {
+    if command -v apt-get &> /dev/null; then
+        echo "📦 Detected Debian/Ubuntu. Installing dependencies..."
+        sudo apt-get update -qq && sudo apt-get install -y git python3-venv nodejs npm
+    elif command -v dnf &> /dev/null; then
+        echo "📦 Detected Fedora/RHEL. Installing dependencies..."
+        sudo dnf install -y git python3 nodejs npm
+    elif command -v pacman &> /dev/null; then
+        echo "📦 Detected Arch Linux. Installing dependencies..."
+        sudo pacman -S --noconfirm git python nodejs npm
+    else
+        echo "⚠️  Unknown package manager. Please ensure git, python3-venv, and nodejs are installed."
+    fi
+}
+
+if [[ "$OSTYPE" == "linux-gnu"* ]]; then
+    echo "🔍 Checking for system dependencies..."
+    install_deps
+fi
+
 mkdir -p "$WORKSPACE_DIR"/{bin,lib,include,src,MCU_docs,.config,.gemini/agents}
 cd "$WORKSPACE_DIR"
 
