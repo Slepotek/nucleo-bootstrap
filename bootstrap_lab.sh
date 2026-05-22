@@ -1,179 +1,155 @@
 #!/bin/bash
 
 # ==============================================================================
-# 🚀 Nucleo Lab: The "Full Toolchain" Bootstrap
+# 🚀 Nucleo Lab: Portable Environment Toolbox
 # ==============================================================================
-# This script creates a self-contained, portable development environment.
-# Tools: Neovim, Gemini CLI, ARM GCC, Clang/LLVM, CMake, Python Venv, Nerd Fonts.
+# This script installs the necessary tools (Nvim, Gemini, GCC, Clang, CMake)
+# into a central 'Toolbox' directory. You can then 'source' the activation
+# script to use these tools in ANY project directory.
 # ==============================================================================
 
 set -e
 
 # --- Configuration & Defaults ---
-WORKSPACE_DIR="$HOME/nucleo-lab"
+TOOLBOX_DIR="$HOME/.nucleo-toolbox"
 INCLUDE_AGENT=true
 NVIM_CONFIG_REPO="https://github.com/Slepotek/nvim_env.git"
 MCU_AGENT_REPO="https://github.com/Slepotek/geminiMcuAgent.git"
 
 usage() {
     cat <<EOF
-🚀 Nucleo Lab Bootstrap Tool
+🚀 Nucleo Lab Toolbox Bootstrap
 Usage: bootstrap.sh [options]
 
-This script sets up a complete, isolated development environment for 
-STM32/Nucleo development.
-
 Options:
-  --workspace <path>  Set the absolute path for the lab workspace.
-                      (Default: \$HOME/nucleo-lab)
+  --path <path>       Set the absolute path for the toolbox installation.
+                      (Default: $HOME/.nucleo-toolbox)
   --no-agent          Skip the installation of the Gemini MCU Expert Agent.
   --help              Display this help message and exit.
 
 Tools Installed:
   - Neovim (Latest AppImage)
-  - Gemini CLI (via npm)
+  - Gemini CLI (Requires Node v20+)
   - ARM GNU Toolchain (GCC, GDB)
   - LLVM/Clang (clangd, analysis tools)
   - CMake & Make
-  - FiraCode Nerd Font (for consistent icons)
-
-Environment:
-  - Isolated XDG config paths (keeps your system clean).
-  - Dedicated Python venv for Neovim (pyright, pynvim).
-  - Pre-configured MCU Agent discovery.
-
+  - FiraCode Nerd Font
 EOF
     exit 0
 }
 
 # --- Parse Arguments ---
-while [[ "\$#" -gt 0 ]]; do
-    case \$1 in
-        --workspace) WORKSPACE_DIR="\$2"; shift ;;
+# Properly escaped for bash variable persistence
+while [[ "$#" -gt 0 ]]; do
+    case $1 in
+        --path) TOOLBOX_DIR="$2"; shift ;;
         --no-agent) INCLUDE_AGENT=false ;;
         --help) usage ;;
-        *) echo "❌ Unknown parameter: \$1"; usage ;;
+        *) echo "❌ Unknown parameter: $1"; usage ;;
     esac
     shift
 done
 
-echo "🛠️  Initializing Complete Lab at: $WORKSPACE_DIR"
+echo "🛠️  Initializing Lab Toolbox at: $TOOLBOX_DIR"
 
 # --- 0. System Dependency Auto-Install ---
 install_deps() {
     if command -v apt-get &> /dev/null; then
         echo "📦 Detected Debian/Ubuntu. Installing dependencies..."
-        sudo apt-get update -qq && sudo apt-get install -y git python3-venv nodejs npm
+        sudo apt-get update -qq
+        # We need a modern Node.js. Default apt version (v18) is often too old.
+        # We'll install nvm or just the basics and warn.
+        sudo apt-get install -y git python3-venv curl
+        
+        # Check Node version. If < 20, we recommend manual update or we use a binary.
+        if ! command -v node &> /dev/null || [[ $(node -v | cut -d. -f1 | tr -d 'v') -lt 20 ]]; then
+            echo "⚠️  System Node.js is missing or too old (< v20). Installing local Node v22..."
+            mkdir -p "$TOOLBOX_DIR/lib/node"
+            curl -L https://nodejs.org/dist/v22.1.0/node-v22.1.0-linux-x86_64.tar.xz | tar -xJ -C "$TOOLBOX_DIR/lib/node" --strip-components=1
+            ln -sf "$TOOLBOX_DIR/lib/node/bin/"* "$TOOLBOX_DIR/bin/"
+        else
+            sudo apt-get install -y nodejs npm
+        fi
     elif command -v dnf &> /dev/null; then
-        echo "📦 Detected Fedora/RHEL. Installing dependencies..."
         sudo dnf install -y git python3 nodejs npm
     elif command -v pacman &> /dev/null; then
-        echo "📦 Detected Arch Linux. Installing dependencies..."
         sudo pacman -S --noconfirm git python nodejs npm
-    else
-        echo "⚠️  Unknown package manager. Please ensure git, python3-venv, and nodejs are installed."
     fi
 }
 
+mkdir -p "$TOOLBOX_DIR"/{bin,lib,include,.config,.gemini/agents}
 if [[ "$OSTYPE" == "linux-gnu"* ]]; then
-    echo "🔍 Checking for system dependencies..."
     install_deps
 fi
 
-mkdir -p "$WORKSPACE_DIR"/{bin,lib,include,src,MCU_docs,.config,.gemini/agents}
-cd "$WORKSPACE_DIR"
+cd "$TOOLBOX_DIR"
 
-# --- 1. Core Editor & Brain ---
-echo "📥 Fetching Neovim (AppImage)..."
+# --- 1. Tool Acquisition ---
+echo "📥 Fetching Neovim..."
 curl -L -o bin/nvim https://github.com/neovim/neovim/releases/latest/download/nvim-linux-x86_64.appimage
 chmod +x bin/nvim
 
 echo "📥 Fetching Gemini CLI..."
-if command -v npm &> /dev/null; then
-    npm install --prefix . @google/gemini-cli
-    ln -sf "$WORKSPACE_DIR/node_modules/.bin/gemini" bin/gemini
-else
-    echo "⚠️  npm not found. Gemini CLI installation skipped."
-fi
+# Use the toolbox path for npm installation
+export PATH="$TOOLBOX_DIR/bin:$PATH"
+npm install --prefix "$TOOLBOX_DIR" @google/gemini-cli
+ln -sf "$TOOLBOX_DIR/node_modules/.bin/gemini" bin/gemini
 
-# --- 2. Build Systems & Toolchains ---
 echo "📥 Fetching CMake..."
-CMAKE_URL="https://github.com/Kitware/CMake/releases/download/v3.29.2/cmake-3.29.2-linux-x86_64.tar.gz"
-curl -L "$CMAKE_URL" | tar -xz -C lib/
-ln -sf "$WORKSPACE_DIR"/lib/cmake-*/bin/* bin/
+curl -L "https://github.com/Kitware/CMake/releases/download/v3.29.2/cmake-3.29.2-linux-x86_64.tar.gz" | tar -xz -C lib/
+ln -sf "$TOOLBOX_DIR"/lib/cmake-*/bin/* bin/
 
-echo "📥 Fetching ARM GNU Toolchain (GCC)..."
-ARM_URL="https://developer.arm.com/-/media/Files/downloads/gnu/13.2.rel1/binrel/arm-gnu-toolchain-13.2.rel1-x86_64-arm-none-eabi.tar.xz"
-curl -L "$ARM_URL" | tar -xJ -C lib/
-ln -sf "$WORKSPACE_DIR"/lib/arm-gnu-toolchain-*/bin/* bin/
+echo "📥 Fetching ARM Toolchain..."
+curl -L "https://developer.arm.com/-/media/Files/downloads/gnu/13.2.rel1/binrel/arm-gnu-toolchain-13.2.rel1-x86_64-arm-none-eabi.tar.xz" | tar -xJ -C lib/
+ln -sf "$TOOLBOX_DIR"/lib/arm-gnu-toolchain-*/bin/* bin/
 
-echo "📥 Fetching LLVM/Clang (for clangd & analysis)..."
-LLVM_URL="https://github.com/llvm/llvm-project/releases/download/llvmorg-18.1.8/clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-18.04.tar.xz"
-curl -L "$LLVM_URL" | tar -xJ -C lib/
-ln -sf "$WORKSPACE_DIR"/lib/clang+llvm-*/bin/* bin/
+echo "📥 Fetching LLVM/Clang..."
+curl -L "https://github.com/llvm/llvm-project/releases/download/llvmorg-18.1.8/clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-18.04.tar.xz" | tar -xJ -C lib/
+ln -sf "$TOOLBOX_DIR"/lib/clang+llvm-*/bin/* bin/
 
-# --- 3. Font Installation (FiraCode Nerd Font) ---
-echo "📥 Installing FiraCode Nerd Font for icons..."
+# --- 2. Fonts ---
+echo "📥 Installing FiraCode Nerd Font..."
 FONT_DIR="$HOME/.local/share/fonts"
 mkdir -p "$FONT_DIR"
 curl -L -o "$FONT_DIR/FiraCodeNerdFont-Regular.ttf" https://github.com/ryanoasis/nerd-fonts/raw/HEAD/patched-fonts/FiraCode/Regular/FiraCodeNerdFont-Regular.ttf
-curl -L -o "$FONT_DIR/FiraCodeNerdFont-Bold.ttf" https://github.com/ryanoasis/nerd-fonts/raw/HEAD/patched-fonts/FiraCode/Bold/FiraCodeNerdFont-Bold.ttf
-echo "🔄 Updating font cache..."
 fc-cache -fv > /dev/null
 
-# --- 4. Repository & Venv Setup ---
-echo "📥 Setting up Neovim Configuration..."
-NVIM_DIR="$WORKSPACE_DIR/.config/nvim"
-if [ ! -d "$NVIM_DIR/.git" ]; then
-    git clone "$NVIM_CONFIG_REPO" "$NVIM_DIR"
-else
-    (cd "$NVIM_DIR" && git pull)
-fi
-
-echo "🐍 Creating local Python environment for Neovim..."
+# --- 3. Configuration Setup ---
+echo "📥 Cloning Neovim Configuration..."
+NVIM_DIR="$TOOLBOX_DIR/.config/nvim"
+git clone "$NVIM_CONFIG_REPO" "$NVIM_DIR"
 python3 -m venv "$NVIM_DIR/venv"
-source "$NVIM_DIR/venv/bin/activate"
-pip install --quiet --upgrade pip pynvim pyright
+"$NVIM_DIR/venv/bin/pip" install --quiet --upgrade pip pynvim pyright
 
 if [ "$INCLUDE_AGENT" = true ]; then
     echo "🧠 Setting up MCU Expert Agent..."
-    AGENT_DIR="$WORKSPACE_DIR/.gemini/agents/mcu-repo"
-    if [ ! -d "$AGENT_DIR/.git" ]; then
-        git clone "$MCU_AGENT_REPO" "$AGENT_DIR"
-    else
-        (cd "$AGENT_DIR" && git pull)
-    fi
-    find "$AGENT_DIR" -name "*.md" -exec ln -sf {} "$WORKSPACE_DIR/.gemini/agents/" \;
+    AGENT_DIR="$TOOLBOX_DIR/.gemini/agents/mcu-repo"
+    git clone "$MCU_AGENT_REPO" "$AGENT_DIR"
+    find "$AGENT_DIR" -name "*.md" -exec ln -sf {} "$TOOLBOX_DIR/.gemini/agents/" \;
 fi
 
-# --- 5. Activation Script Generation ---
+# --- 4. Global Activation Script ---
 echo "📝 Generating activation script..."
 cat <<EOF > activate_lab.sh
 #!/bin/bash
-export WORKSPACE="$WORKSPACE_DIR"
-export PATH="\$WORKSPACE/bin:\$PATH"
-export XDG_CONFIG_HOME="\$WORKSPACE/.config"
-export XDG_DATA_HOME="\$WORKSPACE/.local/share"
-export XDG_STATE_HOME="\$WORKSPACE/.local/state"
+# Nucleo Lab Activation Script
+export LAB_TOOLBOX="$TOOLBOX_DIR"
+export PATH="\$LAB_TOOLBOX/bin:\$PATH"
+export XDG_CONFIG_HOME="\$LAB_TOOLBOX/.config"
+export XDG_DATA_HOME="\$LAB_TOOLBOX/.local/share"
+export XDG_STATE_HOME="\$LAB_TOOLBOX/.local/state"
 
-source "\$WORKSPACE/.config/nvim/venv/bin/activate"
+source "\$LAB_TOOLBOX/.config/nvim/venv/bin/activate"
 
-echo "✅ Lab Environment Activated!"
-echo "🛠️  Build:    cmake, make"
-echo "🛠️  Compiler: arm-none-eabi-gcc, clang, clangd"
-echo "🖥️  Editor:   nvim"
-echo "🧠 Brain:    gemini"
-echo "-------------------------------------------------------"
+echo "✅ Nucleo Lab Toolbox Activated!"
+echo "🛠️  Tools: nvim, gemini, arm-none-eabi-gcc, clangd, cmake"
 EOF
 
 chmod +x activate_lab.sh
 
 echo "=============================================================================="
-echo "✨ Lab Setup Complete! Everything is isolated in $WORKSPACE_DIR"
-echo "👉 IMPORTANT: Set your Terminal Font to 'FiraCode Nerd Font' to see icons."
+echo "✨ Toolbox Ready at: $TOOLBOX_DIR"
 echo ""
-echo "💻 WSL USERS: You MUST also install the FiraCode Nerd Font on your WINDOWS host"
-echo "   machine, as the Windows Terminal is what handles the icon rendering."
-echo ""
-echo "To begin: cd $WORKSPACE_DIR && source activate_lab.sh"
+echo "To use these tools in any project:"
+echo "source $TOOLBOX_DIR/activate_lab.sh"
 echo "=============================================================================="
