@@ -3,14 +3,8 @@
 # ==============================================================================
 # 🚀 Nucleo Lab: Portable Environment Toolbox
 # ==============================================================================
-# This script installs the necessary tools (Nvim, Gemini, GCC, Clang, CMake)
-# into a central 'Toolbox' directory. You can then 'source' the activation
-# script to use these tools in ANY project directory.
-# ==============================================================================
-
 set -e
 
-# --- Configuration & Defaults ---
 TOOLBOX_DIR="$HOME/.nucleo-toolbox"
 INCLUDE_AGENT=true
 NVIM_CONFIG_REPO="https://github.com/Slepotek/nvim_env.git"
@@ -20,32 +14,15 @@ usage() {
     cat <<EOF
 🚀 Nucleo Lab Toolbox Bootstrap
 Usage: bootstrap.sh [options]
-
-Options:
-  --path <path>       Set the absolute path for the toolbox installation.
-                      (Default: $HOME/.nucleo-toolbox)
-  --no-agent          Skip the installation of the Gemini MCU Expert Agent.
-  --help              Display this help message and exit.
-
-Tools Installed:
-  - Neovim (Latest AppImage)
-  - Gemini CLI (Requires Node v20+)
-  - ARM GNU Toolchain (GCC, GDB)
-  - LLVM/Clang (clangd, analysis tools)
-  - CMake & Make
-  - FiraCode Nerd Font
 EOF
     exit 0
 }
 
-# --- Parse Arguments ---
-# Properly escaped for bash variable persistence
-while [[ "$#" -gt 0 ]]; do
-    case $1 in
+while [ $# -ne 0 ]; do
+    case "$1" in
         --path) TOOLBOX_DIR="$2"; shift ;;
         --no-agent) INCLUDE_AGENT=false ;;
         --help) usage ;;
-        *) echo "❌ Unknown parameter: $1"; usage ;;
     esac
     shift
 done
@@ -56,66 +33,76 @@ echo "🛠️  Initializing Lab Toolbox at: $TOOLBOX_DIR"
 install_deps() {
     if command -v apt-get &> /dev/null; then
         echo "📦 Detected Debian/Ubuntu. Installing dependencies..."
-        sudo apt-get update -qq
-        # We need a modern Node.js. Default apt version (v18) is often too old.
-        # We'll install nvm or just the basics and warn.
-        sudo apt-get install -y git python3-venv curl
-        
-        # Check Node version. If < 20, we recommend manual update or we use a binary.
-        if ! command -v node &> /dev/null || [[ $(node -v | cut -d. -f1 | tr -d 'v') -lt 20 ]]; then
-            echo "⚠️  System Node.js is missing or too old (< v20). Installing local Node v22..."
-            mkdir -p "$TOOLBOX_DIR/lib/node"
-            curl -L https://nodejs.org/dist/v22.1.0/node-v22.1.0-linux-x86_64.tar.xz | tar -xJ -C "$TOOLBOX_DIR/lib/node" --strip-components=1
-            ln -sf "$TOOLBOX_DIR/lib/node/bin/"* "$TOOLBOX_DIR/bin/"
-        else
-            sudo apt-get install -y nodejs npm
-        fi
+        sudo apt-get update -qq && sudo apt-get install -y git python3-venv curl xz-utils file
     elif command -v dnf &> /dev/null; then
-        sudo dnf install -y git python3 nodejs npm
+        sudo dnf install -y git python3 nodejs npm xz file
     elif command -v pacman &> /dev/null; then
-        sudo pacman -S --noconfirm git python nodejs npm
+        sudo pacman -S --noconfirm git python nodejs npm xz file
     fi
 }
 
 mkdir -p "$TOOLBOX_DIR"/{bin,lib,include,.config,.gemini/agents}
-if [[ "$OSTYPE" == "linux-gnu"* ]]; then
-    install_deps
-fi
+[[ "$OSTYPE" == "linux-gnu"* ]] && install_deps
 
 cd "$TOOLBOX_DIR"
 
+# --- Helper: Safe Download & Extract ---
+safe_download_extract() {
+    local url=$1
+    local dest=$2
+    local strip=$3
+    echo "📥 Downloading from: $url"
+    local tmp_file=$(mktemp)
+    curl -fsSL -o "$tmp_file" "$url"
+    if ! file "$tmp_file" | grep -E "archive|compressed|data" > /dev/null; then
+        echo "❌ Error: Invalid archive from $url"
+        rm -f "$tmp_file"; exit 1
+    fi
+    mkdir -p "$dest"
+    if [[ "$url" == *.tar.gz ]]; then
+        tar -xz -f "$tmp_file" -C "$dest" --strip-components="$strip"
+    else
+        tar -xJ -f "$tmp_file" -C "$dest" --strip-components="$strip"
+    fi
+    rm -f "$tmp_file"
+}
+
 # --- 1. Tool Acquisition ---
 echo "📥 Fetching Neovim..."
-curl -L -o bin/nvim https://github.com/neovim/neovim/releases/latest/download/nvim-linux-x86_64.appimage
+curl -fsSL -o bin/nvim https://github.com/neovim/neovim/releases/latest/download/nvim-linux-x86_64.appimage
 chmod +x bin/nvim
 
+# Handle Node.js (Corrected URL for linux-x64)
+if ! command -v node &> /dev/null || [ $(node -v | cut -d. -f1 | tr -d 'v') -lt 20 ]; then
+    echo "⚠️  System Node.js too old. Installing local Node v22..."
+    safe_download_extract "https://nodejs.org/dist/v22.1.0/node-v22.1.0-linux-x64.tar.xz" "$TOOLBOX_DIR/lib/node" 1
+    ln -sf "$TOOLBOX_DIR/lib/node/bin/"* "$TOOLBOX_DIR/bin/"
+fi
+
 echo "📥 Fetching Gemini CLI..."
-# Use the toolbox path for npm installation
 export PATH="$TOOLBOX_DIR/bin:$PATH"
 npm install --prefix "$TOOLBOX_DIR" @google/gemini-cli
 ln -sf "$TOOLBOX_DIR/node_modules/.bin/gemini" bin/gemini
 
 echo "📥 Fetching CMake..."
-curl -L "https://github.com/Kitware/CMake/releases/download/v3.29.2/cmake-3.29.2-linux-x86_64.tar.gz" | tar -xz -C lib/
-ln -sf "$TOOLBOX_DIR"/lib/cmake-*/bin/* bin/
+safe_download_extract "https://github.com/Kitware/CMake/releases/download/v3.29.2/cmake-3.29.2-linux-x86_64.tar.gz" "$TOOLBOX_DIR/lib/cmake" 1
+ln -sf "$TOOLBOX_DIR"/lib/cmake/bin/* bin/
 
 echo "📥 Fetching ARM Toolchain..."
-curl -L "https://developer.arm.com/-/media/Files/downloads/gnu/13.2.rel1/binrel/arm-gnu-toolchain-13.2.rel1-x86_64-arm-none-eabi.tar.xz" | tar -xJ -C lib/
-ln -sf "$TOOLBOX_DIR"/lib/arm-gnu-toolchain-*/bin/* bin/
+safe_download_extract "https://developer.arm.com/-/media/Files/downloads/gnu/13.2.rel1/binrel/arm-gnu-toolchain-13.2.rel1-x86_64-arm-none-eabi.tar.xz" "$TOOLBOX_DIR/lib/arm-gcc" 1
+ln -sf "$TOOLBOX_DIR"/lib/arm-gcc/bin/* bin/
 
 echo "📥 Fetching LLVM/Clang..."
-curl -L "https://github.com/llvm/llvm-project/releases/download/llvmorg-18.1.8/clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-18.04.tar.xz" | tar -xJ -C lib/
-ln -sf "$TOOLBOX_DIR"/lib/clang+llvm-*/bin/* bin/
+safe_download_extract "https://github.com/llvm/llvm-project/releases/download/llvmorg-18.1.8/clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-18.04.tar.xz" "$TOOLBOX_DIR/lib/llvm" 1
+ln -sf "$TOOLBOX_DIR"/lib/llvm/bin/* bin/
 
-# --- 2. Fonts ---
+# --- 2. Fonts & Config ---
 echo "📥 Installing FiraCode Nerd Font..."
-FONT_DIR="$HOME/.local/share/fonts"
-mkdir -p "$FONT_DIR"
-curl -L -o "$FONT_DIR/FiraCodeNerdFont-Regular.ttf" https://github.com/ryanoasis/nerd-fonts/raw/HEAD/patched-fonts/FiraCode/Regular/FiraCodeNerdFont-Regular.ttf
+mkdir -p "$HOME/.local/share/fonts"
+curl -fsSL -o "$HOME/.local/share/fonts/FiraCodeNerdFont-Regular.ttf" https://github.com/ryanoasis/nerd-fonts/raw/HEAD/patched-fonts/FiraCode/Regular/FiraCodeNerdFont-Regular.ttf
 fc-cache -fv > /dev/null
 
-# --- 3. Configuration Setup ---
-echo "📥 Cloning Neovim Configuration..."
+echo "📥 Cloning Configuration..."
 NVIM_DIR="$TOOLBOX_DIR/.config/nvim"
 git clone "$NVIM_CONFIG_REPO" "$NVIM_DIR"
 python3 -m venv "$NVIM_DIR/venv"
@@ -128,28 +115,19 @@ if [ "$INCLUDE_AGENT" = true ]; then
     find "$AGENT_DIR" -name "*.md" -exec ln -sf {} "$TOOLBOX_DIR/.gemini/agents/" \;
 fi
 
-# --- 4. Global Activation Script ---
-echo "📝 Generating activation script..."
+# --- 3. Activation ---
 cat <<EOF > activate_lab.sh
 #!/bin/bash
-# Nucleo Lab Activation Script
 export LAB_TOOLBOX="$TOOLBOX_DIR"
 export PATH="\$LAB_TOOLBOX/bin:\$PATH"
 export XDG_CONFIG_HOME="\$LAB_TOOLBOX/.config"
 export XDG_DATA_HOME="\$LAB_TOOLBOX/.local/share"
 export XDG_STATE_HOME="\$LAB_TOOLBOX/.local/state"
-
 source "\$LAB_TOOLBOX/.config/nvim/venv/bin/activate"
-
-echo "✅ Nucleo Lab Toolbox Activated!"
-echo "🛠️  Tools: nvim, gemini, arm-none-eabi-gcc, clangd, cmake"
+echo "✅ Lab Activated!"
 EOF
-
 chmod +x activate_lab.sh
 
 echo "=============================================================================="
-echo "✨ Toolbox Ready at: $TOOLBOX_DIR"
-echo ""
-echo "To use these tools in any project:"
-echo "source $TOOLBOX_DIR/activate_lab.sh"
+echo "✨ Toolbox Ready! Run: source $TOOLBOX_DIR/activate_lab.sh"
 echo "=============================================================================="
